@@ -11,13 +11,21 @@ permissions:
 jobs:
   mac:
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        setup: [homebrew, no-admin]
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
       - name: Install and build using the Mac setup script
+        if: matrix.setup == 'homebrew'
         run: bash scripts/setup-mac.sh
+      - name: Install and build without Homebrew or sudo
+        if: matrix.setup == 'no-admin'
+        run: bash scripts/setup-mac-no-admin.sh
       - name: Run tests including native Keychain storage
-        run: .venv/bin/python -m unittest discover -s tests -v
+        run: PATH="$PWD/.venv/bin:$PATH" .venv/bin/python -m unittest discover -s tests -v
       - name: Start the browser interface and check HTTP responses
         shell: bash
         run: |

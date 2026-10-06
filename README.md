@@ -8,6 +8,35 @@ clip count, duration range, model, project information, and editorial instructio
 
 ## Mac quick start
 
+### Without Homebrew or administrator access
+
+Download the repository using GitHub's **Code → Download ZIP**, unzip it, and open
+Terminal in the resulting `Maho-main` folder. A ZIP download works without Git or
+Apple's developer tools. If you already have the clone, update it first with
+`git pull --ff-only`.
+
+```bash
+bash scripts/setup-mac-no-admin.sh
+bash scripts/start-mac.sh
+```
+
+This installs [Miniforge](https://github.com/conda-forge/miniforge) under
+`~/.maho/miniforge3` and creates Maho's environment inside `.venv`. Python 3.13,
+FFmpeg/FFprobe, and Node.js are installed there. **No Homebrew, administrator
+password, or `sudo` is used.** Your existing Python 3.9.6 stays installed.
+The installer checksum is verified before it runs. Setup needs internet access,
+available disk space, and macOS 11 or newer; packages must support your macOS version.
+
+Paste the two API keys into the hidden prompts; they are saved in Mac Keychain.
+Next time, run only `bash scripts/start-mac.sh`. To update this installation, update
+the repository and rerun `bash scripts/setup-mac-no-admin.sh`.
+
+If setup finds a `.venv` created by the other installation method, rename that
+folder and rerun setup. It will preserve `outputs/` and your saved Keychain keys.
+No shell activation or changes to your shell profile are needed.
+
+### With Homebrew
+
 Install [Homebrew](https://brew.sh/) first if you do not already have it, then open Terminal:
 
 ```bash
@@ -45,7 +74,7 @@ cd /path/to/Maho
 bash scripts/start-mac.sh
 ```
 
-To update, stop the server, then run `git pull --ff-only` and
+To update a Homebrew installation, stop the server, then run `git pull --ff-only` and
 `bash scripts/setup-mac.sh` before starting it again. Rerunning setup rebuilds the
 interface and preserves keys and outputs. Clone the repository on each computer;
 do not copy a Windows `.venv` to a Mac.
