@@ -1,0 +1,226 @@
+{
+  "type": "object",
+  "properties": {
+    "project_summary": {
+      "type": "object",
+      "properties": {
+        "primary_subject": {
+          "type": "string"
+        },
+        "main_topics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "recommended_clip_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "primary_subject",
+        "main_topics",
+        "recommended_clip_count"
+      ],
+      "additionalProperties": false
+    },
+    "clips": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "clip_id": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "title": {
+            "type": "string"
+          },
+          "source_start": {
+            "type": "string",
+            "pattern": "^\\d{2,}:\\d{2}:\\d{2}\\.\\d{3}$"
+          },
+          "source_end": {
+            "type": "string",
+            "pattern": "^\\d{2,}:\\d{2}:\\d{2}\\.\\d{3}$"
+          },
+          "estimated_source_duration_seconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "estimated_finished_duration_seconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "question_context": {
+            "type": "string"
+          },
+          "include_question": {
+            "type": "boolean"
+          },
+          "hook": {
+            "type": "string"
+          },
+          "hook_timestamp": {
+            "type": "string",
+            "pattern": "^\\d{2,}:\\d{2}:\\d{2}\\.\\d{3}$"
+          },
+          "hook_reorder_candidate": {
+            "type": "boolean"
+          },
+          "transcript_excerpt": {
+            "type": "string"
+          },
+          "editorial_reason": {
+            "type": "string"
+          },
+          "internal_cuts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "cut_start": {
+                  "type": "string",
+                  "pattern": "^\\d{2,}:\\d{2}:\\d{2}\\.\\d{3}$"
+                },
+                "cut_end": {
+                  "type": "string",
+                  "pattern": "^\\d{2,}:\\d{2}:\\d{2}\\.\\d{3}$"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "cut_start",
+                "cut_end",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "markers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "timestamp": {
+                  "type": "string",
+                  "pattern": "^\\d{2,}:\\d{2}:\\d{2}\\.\\d{3}$"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "book_mention",
+                    "author_mention",
+                    "character_mention",
+                    "title_mention",
+                    "strong_quote",
+                    "emotional_peak",
+                    "funny_moment",
+                    "topic_change",
+                    "potential_broll",
+                    "potential_text_emphasis",
+                    "call_to_action"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "timestamp",
+                "type",
+                "text",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "scores": {
+            "type": "object",
+            "properties": {
+              "hook_strength": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 10
+              },
+              "standalone_clarity": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 10
+              },
+              "audience_interest": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 10
+              },
+              "campaign_relevance": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 10
+              },
+              "editability": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 10
+              },
+              "emotional_or_intellectual_payoff": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 10
+              },
+              "overall_score": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 10
+              }
+            },
+            "required": [
+              "hook_strength",
+              "standalone_clarity",
+              "audience_interest",
+              "campaign_relevance",
+              "editability",
+              "emotional_or_intellectual_payoff",
+              "overall_score"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "clip_id",
+          "priority",
+          "title",
+          "source_start",
+          "source_end",
+          "estimated_source_duration_seconds",
+          "estimated_finished_duration_seconds",
+          "question_context",
+          "include_question",
+          "hook",
+          "hook_timestamp",
+          "hook_reorder_candidate",
+          "transcript_excerpt",
+          "editorial_reason",
+          "internal_cuts",
+          "markers",
+          "scores"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "project_summary",
+    "clips"
+  ],
+  "additionalProperties": false
+}

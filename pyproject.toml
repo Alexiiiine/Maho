@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maho-clips"
+version = "0.1.0"
+description = "AssemblyAI transcription, structured LLM clip selection, and FFmpeg rendering"
+requires-python = ">=3.11"
+dependencies = ["requests>=2.32.3,<3", "jsonschema>=4.23,<5"]
+
+[project.scripts]
+maho = "maho.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["maho*"]
+
+[tool.setuptools.package-data]
+maho = ["prompts/*.txt"]
