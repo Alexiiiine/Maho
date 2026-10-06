@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -214,7 +215,10 @@ class FFmpegPipelineTests(unittest.TestCase):
         result = subprocess.run([media.executable("ffmpeg"), "-i", str(audio), "-af",
                                  "silencedetect=noise=-35dB:d=1", "-f", "null", "-"], capture_output=True, text=True)
         self.assertIn("silence_start: 0", result.stderr)
-        self.assertIn("silence_end: 1.9", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        silence_end = re.search(r"silence_end:\s*([0-9.]+)", result.stderr)
+        self.assertIsNotNone(silence_end, result.stderr)
+        self.assertAlmostEqual(float(silence_end.group(1)), 2.0, delta=0.1)
 
 
 class EditorialAndOpenAITests(unittest.TestCase):
