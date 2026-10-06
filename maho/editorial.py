@@ -192,6 +192,35 @@ def ground_hook_timestamp(clip, words):
     return {**clip, "hook_timestamp": stamp(exact)}
 
 
+def trim_edge_cuts(clip, words):
+    """Represent removals at the edges as source trims, without adding handles."""
+    result = copy.deepcopy(clip)
+    start, end = millis(result["source_start"]), millis(result["source_end"])
+    cuts = sorted(result["internal_cuts"], key=lambda c: millis(c["cut_start"]))
+    while cuts and millis(cuts[0]["cut_start"]) == start:
+        cut = cuts[0]
+        cut_end = millis(cut["cut_end"])
+        if not start < cut_end <= end:
+            break
+        candidates = [w for w in words if w["start"] >= cut_end and w["end"] <= end]
+        if not candidates:
+            break
+        start = round(candidates[0]["start"])
+        cuts.pop(0)
+    while cuts and millis(cuts[-1]["cut_end"]) == end:
+        cut_start = millis(cuts[-1]["cut_start"])
+        if not start <= cut_start < end:
+            break
+        candidates = [w for w in words if w["start"] >= start and w["end"] <= cut_start]
+        if not candidates:
+            break
+        end = round(candidates[-1]["end"])
+        cuts.pop()
+    result.update(source_start=stamp(start), source_end=stamp(end), internal_cuts=cuts)
+    result["markers"] = [m for m in result["markers"] if start <= millis(m["timestamp"]) <= end]
+    return result
+
+
 def select_editorial(client, transcript, duration, options, cache, log):
     words = validate_words(transcript, duration)
     schema = response_schema()
@@ -221,6 +250,7 @@ def select_editorial(client, transcript, duration, options, cache, log):
                 "name": "editorial_clip_selection", "strict": True, "schema": schema}}}
     cache.mkdir(parents=True, exist_ok=True)
     requests = []
+    validated_pool = {}
     selected, valid = None, []
     for attempt in range(3):
         signature = data_hash({"request": body, "provider": getattr(client, "cache_identity", "assemblyai")})
@@ -250,12 +280,14 @@ def select_editorial(client, transcript, duration, options, cache, log):
         valid, errors = [], []
         for clip in sorted(selected["clips"], key=lambda c: (c["priority"], -c["scores"]["overall_score"])):
             try:
+                clip = trim_edge_cuts(clip, words)
                 clip = ground_hook_timestamp(clip, words)
                 canonical, kept = resolve_edit(clip, words, duration, options)
                 if any(millis(canonical["source_start"]) < millis(other["source_end"]) and
                        millis(canonical["source_end"]) > millis(other["source_start"]) for other in valid):
                     raise ValueError("Source range overlaps a higher-priority selected clip.")
                 valid.append(canonical)
+                validated_pool.setdefault(canonical["title"].casefold().strip(), canonical)
             except ValueError as exc:
                 errors.append({"clip_id": clip["clip_id"], "error": str(exc)})
                 log(f"Rejected '{clip['title']}': {exc}")
@@ -292,6 +324,14 @@ def select_editorial(client, transcript, duration, options, cache, log):
         body = {**body, "messages": [messages[0], {"role": "user", "content": correction}],
                 "response_format": {"type": "json_schema", "json_schema": {
                     "name": "editorial_correction", "strict": True, "schema": correction_schema(len(words))}}}
+    valid = []
+    for clip in sorted(validated_pool.values(), key=lambda c: (c["priority"], -c["scores"]["overall_score"])):
+        if any(millis(clip["source_start"]) < millis(other["source_end"]) and
+               millis(clip["source_end"]) > millis(other["source_start"]) for other in valid):
+            continue
+        valid.append(clip)
+        if len(valid) == options.count:
+            break
     if not valid and selected["clips"]:
         raise ValueError("No valid recommended clips meet the requested runtime and timestamp rules after correction.")
     for index, clip in enumerate(valid, 1):

@@ -45,26 +45,39 @@ def extract_audio(video, destination):
     os.replace(temp, destination)
 
 
-def render_clip(video, clip, destination):
+def padding_filters(lead, tail):
+    video = "pad=ceil(iw/2)*2:ceil(ih/2)*2"
+    audio = "aresample=async=1:first_pts=0"
+    if lead or tail:
+        video += f",tpad=start_mode=clone:stop_mode=clone:start_duration={lead:.6f}:stop_duration={tail:.6f}"
+    if lead:
+        audio += f",adelay=delays={lead * 1000:.3f}:all=1"
+    if tail:
+        audio += f",apad=pad_dur={tail:.6f}"
+    return video, audio
+
+
+def render_clip(video, clip, destination, freeze_lead=0, freeze_tail=0):
     start, end = clip["start_seconds"], clip["end_seconds"]
     temp = destination.with_name(f"{destination.stem}.partial.mp4")
+    video_filter, audio_filter = padding_filters(freeze_lead, freeze_tail)
     run_process([executable("ffmpeg"), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-                 "-ss", f"{start:.3f}", "-i", str(video), "-t", f"{end - start:.3f}",
+                 "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(video),
                  "-map", "0:v:0", "-map", "0:a:0", "-sn", "-dn",
-                 "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-preset", "fast",
+                 "-vf", video_filter, "-c:v", "libx264", "-preset", "fast",
                  "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
-                 "-af", "aresample=async=1:first_pts=0", "-movflags", "+faststart", str(temp)])
+                 "-af", audio_filter, "-movflags", "+faststart", str(temp)])
     info = probe(temp)
-    if abs(info["duration_seconds"] - (end - start)) > 0.5:
+    if abs(info["duration_seconds"] - (end - start + freeze_lead + freeze_tail)) > 0.5:
         raise RuntimeError("Rendered clip duration differs from the requested range by more than 0.5 seconds.")
     os.replace(temp, destination)
     return info["duration_seconds"]
 
 
-def render_edit(video, segments, destination):
+def render_edit(video, segments, destination, freeze_lead=0, freeze_tail=0):
     if len(segments) == 1:
         start, end = segments[0]
-        return render_clip(video, {"start_seconds": start, "end_seconds": end}, destination)
+        return render_clip(video, {"start_seconds": start, "end_seconds": end}, destination, freeze_lead, freeze_tail)
     base, source_end = segments[0][0], segments[-1][1]
     count = len(segments)
     temp = destination.with_name(f"{destination.stem}.partial.mp4")
@@ -74,22 +87,24 @@ def render_edit(video, segments, destination):
         graph.append(f"[vs{i}]trim=start={start-base:.3f}:end={end-base:.3f},setpts=PTS-STARTPTS[v{i}]")
         graph.append(f"[as{i}]atrim=start={start-base:.3f}:end={end-base:.3f},asetpts=PTS-STARTPTS[a{i}]")
     graph.append("".join(f"[v{i}][a{i}]" for i in range(count)) + f"concat=n={count}:v=1:a=1[vc][ac]")
-    graph.append("[vc]pad=ceil(iw/2)*2:ceil(ih/2)*2[vout]")
+    video_filter, audio_filter = padding_filters(freeze_lead, freeze_tail)
+    graph.append(f"[vc]{video_filter}[vout]")
+    graph.append(f"[ac]{audio_filter}[aout]")
     run_process([executable("ffmpeg"), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
                  "-ss", f"{base:.3f}", "-t", f"{source_end-base:.3f}", "-i", str(video),
-                 "-filter_complex", ";".join(graph), "-map", "[vout]", "-map", "[ac]", "-sn", "-dn",
+                 "-filter_complex", ";".join(graph), "-map", "[vout]", "-map", "[aout]", "-sn", "-dn",
                  "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
                  "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(temp)])
     info = probe(temp)
-    expected = sum(end - start for start, end in segments)
+    expected = sum(end - start for start, end in segments) + freeze_lead + freeze_tail
     if abs(info["duration_seconds"] - expected) > 0.5:
         raise RuntimeError("Rendered edit duration differs from the requested finished duration.")
     os.replace(temp, destination)
     return info["duration_seconds"]
 
 
-def edit_subtitles(words, segments, destination):
-    shifted, elapsed = [], 0
+def edit_subtitles(words, segments, destination, offset=0):
+    shifted, elapsed = [], offset
     for start, end in segments:
         for word in words:
             if word["start"] >= start * 1000 - 0.1 and word["end"] <= end * 1000 + 0.1:

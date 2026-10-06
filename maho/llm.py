@@ -27,7 +27,7 @@ def supported_schema(schema):
 
 class OpenAILLM(AssemblyAI):
     provider_name = "OpenAI"
-    cache_identity = {"provider": "openai", "api": "responses", "adapter_version": 2}
+    cache_identity = {"provider": "openai", "api": "responses", "adapter_version": 3}
 
     def __init__(self, key):
         super().__init__(key)
@@ -39,8 +39,9 @@ class OpenAILLM(AssemblyAI):
                    "max_output_tokens": max(body.get("output_budget", 32768), body["max_tokens"] + 4096),
                    "text": {"format": {"type": "json_schema", "name": config["name"],
                                         "strict": True, "schema": supported_schema(config["schema"])}}}
-        if body["model"].startswith("gpt-5"):
-            request["reasoning"] = {"effort": body.get("reasoning_effort", "low")}
+        if body["model"].startswith(("gpt-5", "gpt-6")):
+            default_effort = "high" if body["model"].startswith("gpt-6") else "low"
+            request["reasoning"] = {"effort": body.get("reasoning_effort", default_effort)}
         response = self.request("POST", f"{OPENAI_URL}/responses", json=request, timeout=(15, 900))
         content = []
         refusal = None

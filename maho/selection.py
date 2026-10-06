@@ -9,8 +9,8 @@ class SelectionOptions:
     min_seconds: float = 30
     max_seconds: float = 60
     criteria: str = ""
-    model: str = "gpt-5-mini"
-    reasoning_effort: str = "low"
+    model: str = "gpt-6-sol"
+    reasoning_effort: str = "high"
     max_output_tokens: int = 32768
     project_info: dict = field(default_factory=dict)
     assignment_notes: str = ""

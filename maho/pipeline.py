@@ -7,6 +7,7 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 
 from . import media
+from .rendering import RenderOptions, padded_edit
 from .selection import SelectionOptions, validate_words
 from .editorial import PROMPT_FILE, response_schema, resolve_edit, select_editorial, stamp, timestamped_text
 from .storage import data_hash, file_hash, job_lock, read_json, write_json, write_text
@@ -115,7 +116,7 @@ class Pipeline:
         settings = asdict(options)
         settings["editorial_prompt"] = options.editorial_prompt or PROMPT_FILE.read_text(encoding="utf-8-sig")
         identity = {"source_sha256": self.fingerprint, "transcript_sha256": data_hash(transcript),
-                    "editorial_protocol_version": 2,
+                    "editorial_protocol_version": 3,
                     "provider": getattr(client, "cache_identity", "assemblyai"), "settings": settings}
         path = self.output / "clips.json"
         metadata_path = self.output / "selection.metadata.json"
@@ -135,7 +136,9 @@ class Pipeline:
         self.log(f"Selected {len(selected['clips'])} of {options.count} requested clips.")
         return selected
 
-    def cut(self):
+    def cut(self, render_options=None):
+        rendering = RenderOptions(**{**self.state.get("render_settings", {}), **(render_options or {})})
+        rendering.validate()
         selected = read_json(self.output / "clips.json")
         metadata = read_json(self.output / "selection.metadata.json")
         if metadata.get("source_sha256") != self.fingerprint:
@@ -156,7 +159,10 @@ class Pipeline:
             clip, segments = resolve_edit(saved, words, self.info["duration_seconds"], options)
             if saved != clip or saved["clip_id"] != f"clip_{index:02d}":
                 raise ValueError("Saved clip does not match validated transcript timestamps and text.")
-            plans.append((clip, segments))
+            segments, padding = padded_edit(segments, words, self.info["duration_seconds"], rendering)
+            plans.append((clip, segments, padding))
+        self.state["render_settings"] = asdict(rendering)
+        self.save_state()
         directory = self.output / "clips"
         directory.mkdir(exist_ok=True)
         rendered = []
@@ -165,11 +171,11 @@ class Pipeline:
                 "schema_version": 1, "source_video": str(self.video), "source_sha256": self.fingerprint,
                 "selection_sha256": metadata["selection_sha256"], "updated_at": now(),
                 "status": "completed", "clips": []})
-        for clip, segments in plans:
+        for clip, segments, padding in plans:
             path = directory / f"{clip['clip_id']}.mp4"
             sidecar = directory / f"{clip['clip_id']}.json"
-            signature = data_hash({"source_sha256": self.fingerprint, "clip": clip, "renderer_version": 2})
-            expected = clip["estimated_finished_duration_seconds"]
+            signature = data_hash({"source_sha256": self.fingerprint, "clip": clip, "padding": padding, "renderer_version": 3})
+            expected = clip["estimated_finished_duration_seconds"] + rendering.lead_seconds + rendering.tail_seconds
             if path.exists() and sidecar.exists() and read_json(sidecar).get("render_sha256") == signature:
                 actual_duration = media.probe(path)["duration_seconds"]
                 if abs(actual_duration - expected) > 0.5:
@@ -177,11 +183,13 @@ class Pipeline:
                 self.log(f"Reusing {clip['clip_id']}.")
             else:
                 self.log(f"Rendering {clip['clip_id']}: {clip['title']} ({expected:.2f}s).")
-                actual_duration = media.render_edit(self.video, segments, path)
+                actual_duration = media.render_edit(self.video, segments, path,
+                    freeze_lead=padding["freeze_lead_seconds"], freeze_tail=padding["freeze_tail_seconds"])
             srt = directory / f"{clip['clip_id']}.srt"
-            media.edit_subtitles(words, segments, srt)
+            media.edit_subtitles(words, segments, srt, offset=padding["freeze_lead_seconds"])
             record = {**clip, "output_file": str(path), "subtitles_file": str(srt),
                       "render_sha256": signature, "rendered_duration_seconds": actual_duration,
+                      "padding": padding,
                       "retained_segments": [{"start_seconds": a, "end_seconds": b} for a, b in segments]}
             write_json(sidecar, record)
             rendered.append(record)
@@ -193,7 +201,7 @@ class Pipeline:
         self.save_state()
         return selected
 
-    def execute(self, stage, client=None, options=None, llm=None, **transcription):
+    def execute(self, stage, client=None, options=None, llm=None, render_options=None, **transcription):
         with job_lock(self.output):
             self.initialize()
             if stage in ("run", "transcribe"):
@@ -201,5 +209,5 @@ class Pipeline:
             if stage in ("run", "select"):
                 result = self.select(llm or client, options or SelectionOptions())
             if stage in ("run", "cut"):
-                result = self.cut()
+                result = self.cut(render_options)
             return result

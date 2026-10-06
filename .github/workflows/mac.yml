@@ -1,0 +1,44 @@
+name: Mac setup and tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mac:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install and build using the Mac setup script
+        run: bash scripts/setup-mac.sh
+      - name: Run tests including native Keychain storage
+        run: .venv/bin/python -m unittest discover -s tests -v
+      - name: Start the browser interface and check HTTP responses
+        shell: bash
+        run: |
+          bash scripts/start-mac.sh --no-open --port 8766 > "$RUNNER_TEMP/maho-server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          .venv/bin/python - <<'PY'
+          import json
+          import time
+          from urllib.request import urlopen
+          for attempt in range(20):
+              try:
+                  with urlopen("http://127.0.0.1:8766/", timeout=2) as response:
+                      assert response.status == 200
+                      assert b'id="root"' in response.read()
+                  with urlopen("http://127.0.0.1:8766/api/runs", timeout=2) as response:
+                      assert json.load(response) == []
+                  print("Mac startup and browser API passed.")
+                  break
+              except OSError:
+                  time.sleep(1)
+          else:
+              raise RuntimeError("The browser interface did not start.")
+          PY

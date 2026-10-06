@@ -15,8 +15,9 @@ from maho.pipeline import Pipeline
 from maho.selection import SelectionOptions, validate_words
 from maho.storage import read_json, write_json
 from maho.editorial import (SCORE_NAMES, resolve_edit, response_schema as editorial_schema, timestamped_text,
-                            ground_hook_timestamp, correction_schema, ground_correction, select_editorial)
+                            ground_hook_timestamp, correction_schema, ground_correction, select_editorial, trim_edge_cuts)
 from maho.llm import OpenAILLM
+from maho.rendering import RenderOptions, padded_edit
 
 
 def words(count=60):
@@ -45,6 +46,13 @@ class SelectionTests(unittest.TestCase):
         SelectionOptions(min_seconds=5, max_seconds=10).validate()
         with self.assertRaises(ValueError):
             SelectionOptions(min_seconds=61, max_seconds=60).validate()
+
+    def test_default_model_is_gpt_6_sol_with_high_reasoning(self):
+        defaults = SelectionOptions()
+        self.assertEqual((defaults.model, defaults.reasoning_effort), ("gpt-6-sol", "high"))
+        from maho.cli import parser
+        args = parser().parse_args(["run", "video.mp4"])
+        self.assertEqual(args.reasoning_effort, "high")
 
 
 
@@ -135,13 +143,39 @@ class FFmpegPipelineTests(unittest.TestCase):
         result = self.pipeline().execute("run", self.client, self.options)
         clip = read_json(self.output / "render_manifest.json")["clips"][0]
         self.assertEqual(read_json(self.output / "render_manifest.json")["status"], "completed")
-        self.assertAlmostEqual(media.probe(Path(clip["output_file"]))["duration_seconds"], 1.6, delta=0.12)
+        self.assertAlmostEqual(media.probe(Path(clip["output_file"]))["duration_seconds"], 4.6, delta=0.12)
         self.assertEqual(clip["source_start"], "00:00:01.000")
         self.assertTrue((self.output / "transcript.txt").exists())
         self.assertTrue((self.output / "transcript.srt").exists())
-        self.assertIn("00:00:00,000", Path(clip["subtitles_file"]).read_text())
+        self.assertIn("00:00:01,500", Path(clip["subtitles_file"]).read_text())
         self.pipeline().execute("run", self.client, self.options)
         self.assertEqual((self.client.uploads, self.client.submissions, self.client.completions), (1, 1, 1))
+
+    def test_padding_change_rerenders_locally_and_resumes_without_paid_calls(self):
+        self.pipeline().execute("run", self.client, self.options)
+        selected = read_json(self.output / "clips.json")
+        old = read_json(self.output / "clips" / "clip_01.json")
+        self.pipeline().execute("cut", render_options={"lead_seconds": 2, "tail_seconds": 1})
+        clip = read_json(self.output / "clips" / "clip_01.json")
+        self.assertNotEqual(old["render_sha256"], clip["render_sha256"])
+        self.assertEqual(read_json(self.output / "clips.json"), selected)
+        self.assertIn("00:00:02,000", Path(clip["subtitles_file"]).read_text())
+        with patch("maho.media.render_edit") as render:
+            self.pipeline().execute("run", self.client, self.options)
+        render.assert_not_called()
+        self.assertEqual((self.client.uploads, self.client.submissions, self.client.completions), (1, 1, 1))
+
+    def test_frozen_padding_contains_silence_and_preserves_spoken_audio(self):
+        self.pipeline().execute("run", self.client, self.options)
+        import array
+        target = self.output / "clips" / "clip_01.mp4"
+        result = subprocess.run([media.executable("ffmpeg"), "-v", "error", "-i", str(target),
+                                 "-f", "f32le", "-ac", "1", "-ar", "8000", "pipe:1"], capture_output=True, check=True)
+        samples = array.array("f", result.stdout)
+        rms = lambda a: (sum(x * x for x in a) / len(a)) ** .5
+        self.assertLess(rms(samples[800:8000]), .001)
+        self.assertGreater(rms(samples[13600:18400]), .03)
+        self.assertLess(rms(samples[26400:34400]), .001)
 
     def test_poll_timeout_resume_reuses_transcript_id(self):
         completed = self.client.transcript_result
@@ -223,6 +257,24 @@ class EditorialAndOpenAITests(unittest.TestCase):
         self.assertEqual(actual["clips"][0]["source_start"], "00:00:01.000")
         self.assertEqual(actual["clips"][0]["source_end"], "00:00:02.600")
         self.assertNotIn("source_start_word", actual["clips"][0])
+
+    def test_edge_removals_become_exact_source_trims(self):
+        clip = editorial_candidate(0, 19)
+        clip.update(hook="Word5.", hook_timestamp="00:00:01.000")
+        clip["internal_cuts"] = [{"cut_start": "00:00:00.000", "cut_end": "00:00:01.000", "reason": "Remove opening filler"}]
+        trimmed = trim_edge_cuts(clip, self.words)
+        actual, kept = resolve_edit(trimmed, self.words, 4, self.options)
+        self.assertEqual(actual["source_start"], "00:00:01.000")
+        self.assertEqual(actual["internal_cuts"], [])
+        self.assertEqual(kept, [(1, 4)])
+
+    def test_invalid_edge_cut_cannot_expand_the_source_range(self):
+        clip = editorial_candidate()
+        clip["internal_cuts"] = [{"cut_start": "00:00:01.000", "cut_end": "00:00:00.800", "reason": "Invalid"}]
+        trimmed = trim_edge_cuts(clip, self.words)
+        self.assertEqual(trimmed["source_start"], clip["source_start"])
+        with self.assertRaises(ValueError):
+            resolve_edit(trimmed, self.words, 4, self.options)
 
     def test_invalid_selection_is_corrected_and_both_api_responses_are_cached(self):
         class RepairClient:
@@ -307,6 +359,17 @@ class EditorialAndOpenAITests(unittest.TestCase):
             with patch.object(client, "request", return_value=response):
                 self.assertNotEqual(client.complete(body)["choices"][0]["finish_reason"], "stop")
 
+    def test_gpt_6_sol_high_reasoning_is_sent_to_responses(self):
+        client = OpenAILLM("test-key")
+        with patch.object(client, "request", return_value={"status": "completed", "output": []}) as call:
+            client.complete({"model": "gpt-6-sol", "reasoning_effort": "high", "messages": [],
+                             "max_tokens": 4096, "response_format": {"json_schema": {
+                                 "name": "test", "schema": editorial_schema()}}})
+        payload = call.call_args.kwargs["json"]
+        self.assertEqual(payload["model"], "gpt-6-sol")
+        self.assertEqual(payload["reasoning"], {"effort": "high"})
+        self.assertTrue(payload["text"]["format"]["strict"])
+
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
 class InternalCutRenderTests(unittest.TestCase):
@@ -318,6 +381,39 @@ class InternalCutRenderTests(unittest.TestCase):
                                "sine=frequency=440:duration=4", "-c:v", "libx264", "-c:a", "aac", str(source)])
             duration = media.render_edit(source, [(0, 1), (2, 4)], target)
             self.assertAlmostEqual(duration, 3, delta=0.15)
+            duration = media.render_edit(source, [(0, 1), (2, 4)], target, freeze_lead=1.5, freeze_tail=1.5)
+            self.assertAlmostEqual(duration, 6, delta=0.15)
+
+
+class PaddingPlanTests(unittest.TestCase):
+    def test_natural_handles_and_subtitles_are_aligned(self):
+        transcript = [{"text": "Hello.", "start": 3000, "end": 4000}]
+        segments, padding = padded_edit([(3, 4)], transcript, 8, RenderOptions())
+        self.assertEqual(segments, [(1.5, 5.5)])
+        self.assertEqual(padding["freeze_lead_seconds"], 0)
+        self.assertEqual(padding["freeze_tail_seconds"], 0)
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "clip.srt"
+            media.edit_subtitles(transcript, segments, path, offset=padding["freeze_lead_seconds"])
+            self.assertIn("00:00:01,500 --> 00:00:02,500", path.read_text())
+
+    def test_neighboring_words_and_internal_cut_are_preserved(self):
+        transcript = [{"start": 1000, "end": 2500}, {"start": 3000, "end": 4000},
+                      {"start": 6000, "end": 7000}, {"start": 7200, "end": 8000}]
+        segments, padding = padded_edit([(3, 4), (6, 7)], transcript, 10, RenderOptions())
+        self.assertEqual(segments, [(2.58, 4), (6, 7.12)])
+        self.assertEqual(padding["freeze_lead_seconds"], 1.08)
+        self.assertEqual(padding["freeze_tail_seconds"], 1.38)
+
+    def test_source_edges_fill_requested_padding(self):
+        segments, padding = padded_edit([(0, 4)], [{"start": 0, "end": 4000}], 4, RenderOptions())
+        self.assertEqual(segments, [(0, 4)])
+        self.assertEqual((padding["freeze_lead_seconds"], padding["freeze_tail_seconds"]), (1.5, 1.5))
+
+    def test_invalid_padding_is_rejected(self):
+        for value in (-1, 11, float("nan"), float("inf"), True, "1.5"):
+            with self.assertRaises(ValueError):
+                RenderOptions(lead_seconds=value).validate()
 
 
 if __name__ == "__main__":

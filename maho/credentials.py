@@ -1,11 +1,25 @@
-"""API key storage in the current user's Windows Credential Manager."""
+"""API keys in Windows Credential Manager or the native macOS Keychain."""
 
 import ctypes
 import os
+import sys
 from ctypes import wintypes
 
 TARGET = "Maho/AssemblyAI"
 OPENAI_TARGET = "Maho/OpenAI"
+
+
+def _mac_keychain():
+    try:
+        # Select the native backend explicitly; never use a plaintext fallback.
+        from keyring.backends.macOS import Keyring
+        return Keyring()
+    except ImportError:
+        raise RuntimeError("Mac Keychain support is missing. Run 'python -m pip install -e .' again.") from None
+
+
+def key_storage_name():
+    return "macOS Keychain" if sys.platform == "darwin" else "Windows Credential Manager"
 
 
 class Credential(ctypes.Structure):
@@ -43,6 +57,17 @@ def save_key(key: str, service="assemblyai") -> None:
     key = key.strip()
     if not key or len(key.encode("utf-8")) > 2560:
         raise ValueError("Enter a valid API key.")
+    if service not in ("assemblyai", "openai"):
+        raise ValueError("Unknown API service.")
+    if sys.platform == "darwin":
+        backend = _mac_keychain()
+        try:
+            backend.set_password(OPENAI_TARGET if service == "openai" else TARGET, "Maho", key)
+        except Exception:
+            raise RuntimeError("Could not save the key in macOS Keychain. Unlock your login keychain and allow access.") from None
+        return
+    if os.name != "nt":
+        raise RuntimeError("Set ASSEMBLYAI_API_KEY or OPENAI_API_KEY in the environment on this operating system.")
     api = _api()
     blob = (ctypes.c_ubyte * len(key.encode("utf-8"))).from_buffer_copy(key.encode("utf-8"))
     cred = Credential()
@@ -57,11 +82,21 @@ def save_key(key: str, service="assemblyai") -> None:
 
 
 def get_key(service="assemblyai") -> str:
+    if service not in ("assemblyai", "openai"):
+        raise ValueError("Unknown API service.")
     variable = "OPENAI_API_KEY" if service == "openai" else "ASSEMBLYAI_API_KEY"
     key = os.environ.get(variable, "").strip()
     if key:
         return key
-    if os.name == "nt":
+    if sys.platform == "darwin":
+        backend = _mac_keychain()
+        try:
+            key = backend.get_password(OPENAI_TARGET if service == "openai" else TARGET, "Maho")
+        except Exception:
+            raise RuntimeError("Could not read macOS Keychain. Unlock your login keychain and allow access.") from None
+        if key and key.strip():
+            return key.strip()
+    elif os.name == "nt":
         api = _api()
         pointer = ctypes.POINTER(Credential)()
         target = OPENAI_TARGET if service == "openai" else TARGET
